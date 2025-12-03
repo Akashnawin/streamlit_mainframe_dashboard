@@ -32,44 +32,69 @@ def init_firestore_from_secrets():
     under key FIREBASE_SERVICE_ACCOUNT. Accepts either:
       - a JSON string (the whole file contents), or
       - a parsed dict (if you put JSON directly as a dict in secrets)
-    Also supports local file "serviceAccount.json" fallback for local testing.
+
+    Also supports:
+      - FIREBASE_STORAGE_BUCKET secret (optional) to set storageBucket option
+      - local serviceAccount.json fallback for local development
     """
     # if already initialized, return app
     if firebase_admin._apps:
         return firebase_admin.get_app()
 
-    # 1) Try Streamlit secrets (preferred on Streamlit Cloud)
     sa = None
+
+    # 1) Try Streamlit secrets (preferred on Streamlit Cloud)
     if "FIREBASE_SERVICE_ACCOUNT" in st.secrets:
         sa_raw = st.secrets["FIREBASE_SERVICE_ACCOUNT"]
-        # If secrets entry is a dict already, use it; else attempt to parse JSON string
+        # If secrets entry is already a dict (TOML parsed), use it
         if isinstance(sa_raw, dict):
             sa = sa_raw
         else:
+            # If it's a string, try JSON parse
             try:
                 sa = json.loads(sa_raw)
-            except Exception as e:
+            except Exception:
+                # show a helpful non-secret hint
                 st.error("Failed to parse FIREBASE_SERVICE_ACCOUNT JSON from Streamlit secrets.")
+                st.write("Secrets entry type:", type(sa_raw).__name__)
+                st.write("Secrets entry length:", len(sa_raw) if isinstance(sa_raw, str) else "n/a")
+                st.write("Tip: paste the entire JSON file as one triple-quoted string in the Secrets editor, or paste it as a TOML table (Streamlit will convert it to a dict).")
                 st.stop()
 
-    # 2) Fallback: local serviceAccount.json file (useful for local dev/Colab)
+    # 2) Fallback: local serviceAccount.json file (useful for local dev / Colab)
     if sa is None and os.path.exists("serviceAccount.json"):
         try:
             with open("serviceAccount.json", "r") as fh:
                 sa = json.load(fh)
-        except Exception as e:
-            st.error("Failed to read local serviceAccount.json.")
+        except Exception:
+            st.error("Failed to read local serviceAccount.json file.")
             st.stop()
 
+    # 3) Nothing found -> stop with instruction
     if sa is None:
         st.error("Service account JSON not found in Streamlit secrets or serviceAccount.json file. See README.")
         st.stop()
 
+    # sanity check
+    if not isinstance(sa, dict) or "project_id" not in sa:
+        st.error("Parsed service account looks invalid (missing project_id).")
+        st.stop()
+
+    # optional storage bucket from secrets (or you can include it in service account)
+    storage_bucket = None
+    if "FIREBASE_STORAGE_BUCKET" in st.secrets:
+        storage_bucket = st.secrets["FIREBASE_STORAGE_BUCKET"]
+
+    # Attempt initialize
     try:
+        options = {}
+        if storage_bucket:
+            options["storageBucket"] = storage_bucket
+        # initialize_app accepts credential and options dict
         cred = credentials.Certificate(sa)
-        firebase_admin.initialize_app(cred)
+        firebase_admin.initialize_app(cred, options or None)
     except Exception as e:
-        st.error(f"Failed to initialize Firebase app: {e}")
+        st.error(f"Failed to initialize Firebase admin SDK: {e}")
         st.stop()
 
     return firebase_admin.get_app()
